@@ -9,22 +9,23 @@ use rmcp::{
 
 mod local;
 use crate::local::local_client;
+use stakpak_shared::Env;
 
 pub struct ClientManager {
     clients: HashMap<String, RunningService<RoleClient, ()>>,
 }
 
 impl ClientManager {
-    pub async fn new() -> Result<Self> {
-        let client1 = local_client().await?;
+    pub async fn new(env: Env) -> Result<Self> {
+        let client1 = local_client(env).await?;
         Ok(Self {
             clients: HashMap::from([("local".to_string(), client1)]),
         })
     }
 
-    pub async fn get_clients(&self) -> Result<Vec<RunningService<RoleClient, ()>>> {
-        let client1 = local_client().await?;
-        Ok(vec![client1])
+    pub async fn get_clients(&self) -> Result<Vec<&RunningService<RoleClient, ()>>> {
+        let clients = self.clients.values().collect();
+        Ok(clients)
     }
 
     pub async fn get_tools(&self) -> Result<HashMap<String, Vec<Tool>>> {

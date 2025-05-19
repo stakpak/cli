@@ -71,7 +71,9 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<String>(100);
 
     // Initialize clients and tools
-    let clients = ClientManager::new().await.map_err(|e| e.to_string())?;
+    let clients = ClientManager::new(config.env.clone())
+        .await
+        .map_err(|e| e.to_string())?;
     let tools_map = clients.get_tools().await.map_err(|e| e.to_string())?;
     let tools = convert_tools_map(&tools_map);
 
@@ -81,7 +83,6 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string());
     });
-
     // Spawn client task
     let client_handle: tokio::task::JoinHandle<Result<(), String>> = tokio::spawn(async move {
         let client = Client::new(&config).map_err(|e| e.to_string())?;
