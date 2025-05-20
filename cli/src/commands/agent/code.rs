@@ -132,6 +132,7 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
     let mut messages: Vec<ChatMessage> = Vec::new();
     let (input_tx, input_rx) = tokio::sync::mpsc::channel::<InputEvent>(100);
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<OutputEvent>(100);
+    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
 
     // Initialize clients and tools
     let clients = ClientManager::new().await.map_err(|e| e.to_string())?;
@@ -177,39 +178,53 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
                         .await?;
                     }
                 }
+                OutputEvent::CancelRequest => {
+                    let _ = cancel_tx.send(true);
+                    continue;
+                }
             }
             send_input_event(&input_tx, InputEvent::Loading(true)).await?;
-            let response = match client
-                .chat_completion(messages.clone(), Some(tools.clone()))
-                .await
-            {
-                Ok(response) => response,
-                Err(e) => {
+            let cancel_fut = cancel_rx.changed();
+            let chat_fut = client.chat_completion(messages.clone(), Some(tools.clone()));
+            tokio::select! {
+                biased;
+                _ = cancel_fut => {
                     send_input_event(&input_tx, InputEvent::Loading(false)).await?;
-                    input_tx
-                        .send(InputEvent::Quit)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    return Err(e.to_string());
+                    continue;
                 }
-            };
-            send_input_event(&input_tx, InputEvent::Loading(false)).await?;
+                resp = chat_fut => {
+                    let response = match resp {
+                        Ok(response) => response,
+                        Err(e) => {
+                            send_input_event(&input_tx, InputEvent::Loading(false)).await?;
+                            input_tx
+                                .send(InputEvent::Quit)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            return Err(e.to_string());
+                        }
+                    };
+                    send_input_event(&input_tx, InputEvent::Loading(false)).await?;
 
-            messages.push(response.choices[0].message.clone());
+                    messages.push(response.choices[0].message.clone());
 
-            // Send main response content to TUI
-            let content = response.choices[0]
-                .message
-                .content
-                .clone()
-                .unwrap_or(MessageContent::String("".to_string()))
-                .to_string();
+                    // Send main response content to TUI
+                    let content = response.choices[0]
+                        .message
+                        .content
+                        .clone()
+                        .unwrap_or(MessageContent::String("".to_string()))
+                        .to_string();
 
-            send_input_event(&input_tx, InputEvent::InputSubmittedWith(content)).await?;
+                    send_input_event(&input_tx, InputEvent::InputSubmittedWith(content)).await?;
 
-            // Send tool calls to TUI if present
-            if let Some(tool_calls) = &response.choices[0].message.tool_calls {
-                send_tool_calls(&input_tx, tool_calls).await?;
+                    // Send tool calls to TUI if present
+                    if let Some(tool_calls) = &response.choices[0].message.tool_calls {
+                        send_tool_calls(&input_tx, tool_calls).await?;
+                    }
+                    // Reset cancel signal for next request
+                    let _ = cancel_tx.send(false);
+                }
             }
         }
         Ok(())

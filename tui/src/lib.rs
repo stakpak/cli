@@ -3,7 +3,7 @@ mod event;
 mod terminal;
 mod view;
 
-pub use app::{AppState, InputEvent, Message, OutputEvent, update, render_bash_block};
+pub use app::{AppState, InputEvent, Message, OutputEvent, render_bash_block, update};
 pub use event::map_crossterm_event_to_input_event;
 pub use terminal::TerminalGuard;
 pub use view::view;
@@ -12,7 +12,7 @@ use crossterm::{execute, terminal::EnterAlternateScreen};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 pub async fn run_tui(
     mut input_rx: Receiver<InputEvent>,
@@ -40,8 +40,6 @@ pub async fn run_tui(
         }
     });
 
-
-
     let mut spinner_interval = interval(Duration::from_millis(100));
     // Main async update/view loop
     terminal.draw(|f| view::view(f, &state))?;
@@ -60,7 +58,14 @@ pub async fn run_tui(
                         render_bash_block(&tool_call, &s, true, &mut state);
                     }
                 }
-                if let InputEvent::Quit = event { should_quit = true; }
+                if let InputEvent::CancelRequest = event {
+                    eprintln!("TUI: Sending CancelRequest to backend");
+                    let _ = output_tx.try_send(OutputEvent::CancelRequest);
+                }
+                if let InputEvent::Quit = event {
+                    eprintln!("TUI: Received Quit event (input_rx), will exit main loop");
+                    should_quit = true;
+                }
                 else {
                     let term_size = terminal.size()?;
                     let input_height = 3;
@@ -89,7 +94,10 @@ pub async fn run_tui(
                 }
             }
             Some(event) = internal_rx.recv() => {
-                if let InputEvent::Quit = event { should_quit = true; }
+                if let InputEvent::Quit = event {
+                    eprintln!("TUI: Received Quit event (internal_rx), will exit main loop");
+                    should_quit = true;
+                }
                 else {
                     let term_size = terminal.size()?;
                     let input_height = 3;
@@ -127,7 +135,10 @@ pub async fn run_tui(
                 terminal.draw(|f| view::view(f, &state))?;
             }
         }
-        if should_quit { break; }
+        if should_quit {
+            eprintln!("TUI: Main loop exiting");
+            break;
+        }
         terminal.draw(|f| view::view(f, &state))?;
     }
 

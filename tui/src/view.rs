@@ -464,13 +464,17 @@ fn render_confirmation_dialog(f: &mut Frame, state: &AppState) {
         height: dialog_height as u16,
     };
 
-    let command_name = serde_json::from_str::<Value>(&state.dialog_command.as_ref().unwrap().function.arguments)
-    .ok()
-    .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(|s| s.to_string()))
-    .unwrap_or_else(|| "?".to_string());
-   
+    let command_name =
+        serde_json::from_str::<Value>(&state.dialog_command.as_ref().unwrap().function.arguments)
+            .ok()
+            .and_then(|v| {
+                v.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "?".to_string());
 
-    let max_title_width = area.width.saturating_sub(12) as usize; 
+    let max_title_width = area.width.saturating_sub(12) as usize;
     let mut title_lines = vec![];
     let mut current = command_name.as_str();
     while !current.is_empty() {
@@ -522,7 +526,7 @@ fn render_confirmation_dialog(f: &mut Frame, state: &AppState) {
         height: dialog_height as u16,
     };
     let desc = ""; // TODO: make this dynamic
-    let options = ["Yes", "No, and tell Stapak what to do differently (esc)"];
+    let options = ["Yes", "No, and tell Stapak what to do differently"];
     lines.push(Line::from(vec![Span::styled(
         format!("{pad}{}{pad}", desc),
         Style::default().fg(Color::Gray),
@@ -553,5 +557,3 @@ fn render_confirmation_dialog(f: &mut Frame, state: &AppState) {
         .alignment(Alignment::Left);
     f.render_widget(dialog, area);
 }
-
-
