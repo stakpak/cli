@@ -5,6 +5,9 @@ use stakpak_shared::models::integrations::openai::ToolCall;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 use crate::view::render_system_message;
+use ratatui::layout::Position;
+use clipboard::{ClipboardProvider, ClipboardContext};
+
 pub enum MessageContent {
     Plain(String, Style),
     Styled(Line<'static>),
@@ -58,7 +61,11 @@ impl Message {
     }
 }
 
-
+pub struct TextSelection {
+    pub start: Position,
+    pub end: Position,
+    pub is_selecting: bool,
+}
 
 pub struct AppState {
     pub input: String,
@@ -82,6 +89,10 @@ pub struct AppState {
     pub show_sessions_dialog: bool,
     pub session_selected: usize,
     pub account_info: String,
+    pub text_selection: Option<TextSelection>,
+    pub selected_text: String,
+ 
+
 }
 
 #[derive(Debug)]
@@ -112,6 +123,10 @@ pub enum InputEvent {
     CursorLeft,
     CursorRight,
     ToggleCursorVisible,
+    MouseDown(Position),
+    MouseDrag(Position),
+    MouseUp(Position),
+    CopySelection,
     Resized(u16, u16),
     ShowConfirmationDialog(ToolCall),
     DialogConfirm,
@@ -161,6 +176,8 @@ impl AppState {
             show_sessions_dialog: false,
             session_selected: 0,
             account_info: String::new(),
+            text_selection: None,
+            selected_text: String::new(),
         }
     }
 }
@@ -269,10 +286,68 @@ pub fn update(
         InputEvent::GetStatus(account_info) => {
             state.account_info = account_info;
         }
+        InputEvent::MouseDown(position) => {
+            clear_selection(state);
+            start_selection(state, position);
+        }
+        
+        InputEvent::MouseDrag(position) => {
+            // Update selection during drag
+            update_selection(state, position);
+        }
+        
+        InputEvent::MouseUp(_position) => {
+            // Finish selection
+            if let Some(selection) = &mut state.text_selection {
+                selection.is_selecting = false;
+                let selected_text = &state.selected_text;
+                if !selected_text.trim().is_empty() {
+                    // Show system message about selection
+                    render_system_message(state, &format!("Selected text: '{}' - Press Ctrl+C to copy", selected_text.trim()));
+                }
+            }
+        }
+        
+        InputEvent::CopySelection => {
+            if !state.selected_text.is_empty() {
+                // Copy to clipboard
+                match copy_to_clipboard(&state.selected_text){
+                    Ok(_) => {
+                        eprintln!("copying to clipboard {}", state.selected_text);
+                        render_system_message(state, "Text copied to clipboard!");
+                        clear_selection(state);
+                    }
+                    Err(e) => {
+                        render_system_message(state, &format!("Failed to copy to clipboard: {}", e));
+                    }
+                }
+            }
+        }
         _ => {}
     }
     adjust_scroll(state, message_area_height, message_area_width);
 }
+
+
+fn clear_selection(state: &mut AppState) {
+    state.text_selection = None;
+    state.selected_text = String::new();
+}
+
+fn start_selection(state: &mut AppState, position: Position) {
+    state.text_selection = Some(TextSelection {
+        start: position,
+        end: position,
+        is_selecting: true,
+    });
+}
+
+fn update_selection(state: &mut AppState, position: Position) {
+    if let Some(selection) = &mut state.text_selection {
+        selection.end = position;
+    }
+}
+
 
 fn handle_dropdown_up(state: &mut AppState) {
     if state.show_helper_dropdown
@@ -842,4 +917,10 @@ pub fn push_help_message(state: &mut AppState) {
         id: uuid::Uuid::new_v4(),
         content: MessageContent::StyledBlock(lines),
     });
+}
+
+fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx: ClipboardContext = ClipboardProvider::new()?;
+    ctx.set_contents(text.to_owned())?;
+    Ok(())
 }

@@ -127,6 +127,7 @@ pub async fn run_tui(
             }
         }
         if should_quit {
+            execute!(std::io::stdout(), DisableMouseCapture)?;
             break;
         }
         terminal.draw(|f| view::view(f, &state))?;

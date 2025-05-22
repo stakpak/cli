@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Rect, Alignment},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, List, ListItem, ListState},
+    widgets::{Block, Borders, Paragraph, List, ListItem, ListState, Clear},
 };
 use crate::app::{Message, get_wrapped_message_lines};
 use serde_json::Value;
@@ -65,6 +65,9 @@ pub fn view(f: &mut Frame, state: &AppState) {
         message_area_width,
         message_area_height,
     );
+
+    render_selection_overlay(f, state, message_area);
+
     // Only reserve and render dialog if open
     if state.is_dialog_open {
         render_confirmation_dialog(f, state);
@@ -654,4 +657,81 @@ pub fn render_system_message(state: &mut AppState, msg: &str) {
         id: Uuid::new_v4(),
         content: MessageContent::StyledBlock(lines),
     });
+}
+
+fn render_selection_overlay(f: &mut Frame, state: &AppState, message_area: Rect) {
+    if let Some(ref selection) = state.text_selection {
+        // Calculate selection rectangle
+        let start_x = selection.start.x.min(selection.end.x);
+        let start_y = selection.start.y.min(selection.end.y);
+        let end_x = selection.start.x.max(selection.end.x);
+        let end_y = selection.start.y.max(selection.end.y);
+        
+        // Ensure selection is within message area bounds
+        let selection_start_x = start_x.max(message_area.x);
+        let selection_start_y = start_y.max(message_area.y);
+        let selection_end_x = end_x.min(message_area.x + message_area.width - 1);
+        let selection_end_y = end_y.min(message_area.y + message_area.height - 1);
+        
+        // Render selection highlight for each row
+        for y in selection_start_y..=selection_end_y {
+            let row_start_x = if y == selection_start_y { selection_start_x } else { message_area.x };
+            let row_end_x = if y == selection_end_y { selection_end_x } else { message_area.x + message_area.width - 1 };
+            
+            if row_end_x >= row_start_x {
+                let selection_rect = Rect {
+                    x: row_start_x,
+                    y,
+                    width: row_end_x - row_start_x + 1,
+                    height: 1,
+                };
+                
+                // Create a highlight overlay
+                let highlight = Block::default()
+                    .style(Style::default().bg(Color::Blue).fg(Color::White));
+                f.render_widget(highlight, selection_rect);
+            }
+        }
+        
+        // Show selection info in a small popup if selection is finished
+        if !selection.is_selecting && !state.selected_text.is_empty() {
+            render_selection_popup(f, state);
+        }
+    }
+}
+
+fn render_selection_popup(f: &mut Frame, state: &AppState) {
+    let popup_area = Rect {
+        x: f.size().width / 4,
+        y: f.size().height / 2,
+        width: f.size().width / 2,
+        height: 6,
+    };
+    
+    f.render_widget(Clear, popup_area);
+    
+    let preview = if state.selected_text.len() > 30 {
+        format!("{}...", &state.selected_text[..30])
+    } else {
+        state.selected_text.clone()
+    };
+    
+    let popup_content = vec![
+        Line::from("Text Selected!"),
+        Line::from(format!("Preview: '{}'", preview)),
+        Line::from("Press Alt+C to copy to clipboard"),
+        Line::from("Click elsewhere to clear selection"),
+    ];
+    
+    let popup = Paragraph::new(popup_content)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Selection")
+                .border_style(Style::default().fg(Color::Yellow))
+        )
+        .style(Style::default().bg(Color::Black))
+        .alignment(Alignment::Center);
+    
+    f.render_widget(popup, popup_area);
 }
