@@ -1,3 +1,4 @@
+use crate::services::helper_block::push_error_message;
 use crate::services::message::Message;
 use ratatui::style::Style;
 use stakpak_shared::models::integrations::openai::{ToolCall, ToolCallResult};
@@ -48,6 +49,7 @@ pub enum InputEvent {
     Loading(bool),
     InputChanged(char),
     GetStatus(String),
+    Error(String),
     InputBackspace,
     InputChangedNewline,
     InputSubmitted,
@@ -83,7 +85,7 @@ pub enum OutputEvent {
 
 impl AppState {
     pub fn new(helpers: Vec<&'static str>) -> Self {
-        AppState {
+        let mut state= AppState {
             input: String::new(),
             cursor_position: 0,
             cursor_visible: true,
@@ -123,6 +125,10 @@ impl AppState {
             session_selected: 0,
             account_info: String::new(),
             pending_bash_message_id: None, // Initialize new field
+        };
+        if std::env::current_dir().is_err() {
+            push_error_message(&mut state, "Failed to get current working directory");
         }
+        state
     }
 }
