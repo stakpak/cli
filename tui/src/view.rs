@@ -22,7 +22,6 @@ pub fn view(f: &mut Frame, state: &AppState) {
     let input_lines = calculate_input_lines(&state.input, input_area_width); // -4 for borders and padding
     let input_height = (input_lines + 2) as u16; // +2 for border
 
-    let margin_height = 2;
     let dropdown_showing = state.show_helper_dropdown
         && !state.filtered_helpers.is_empty()
         && state.input.starts_with('/');
@@ -31,16 +30,11 @@ pub fn view(f: &mut Frame, state: &AppState) {
     } else {
         0
     };
-    let hint_height = if dropdown_showing { 0 } else { margin_height };
+    let hint_height = if dropdown_showing { 0 } else { 2 };
 
     let dialog_height = if state.show_sessions_dialog { 11 } else { 0 };
-    let dialog_margin = if state.is_dialog_open || state.show_sessions_dialog {
-        1
-    } else {
-        0
-    };
+    let dialog_margin = if state.show_sessions_dialog { 1 } else { 0 };
 
-    // Layout: [messages][dialog_margin][dialog][input][dropdown][hint]
     let mut constraints = vec![
         Constraint::Min(1), // messages
         Constraint::Length(dialog_margin),
@@ -81,7 +75,7 @@ pub fn view(f: &mut Frame, state: &AppState) {
         hint_area = chunks.get(5).copied().unwrap_or(input_area);
     }
     let message_area_width = message_area.width as usize;
-    let message_area_height = message_area.height.saturating_sub(input_height) as usize;
+    let message_area_height = message_area.height as usize;
 
     render_messages(
         f,

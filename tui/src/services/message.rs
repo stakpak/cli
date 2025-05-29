@@ -122,10 +122,12 @@ pub fn get_wrapped_styled_block_lines<'a>(
     lines: &'a [Line<'a>],
     _width: usize,
 ) -> Vec<(Line<'a>, Style)> {
-    lines
+    let mut result: Vec<(Line<'a>, Style)> = lines
         .iter()
         .map(|l| (l.clone(), Style::default()))
-        .collect()
+        .collect();
+    result.push((Line::from(""), Style::reset()));
+    result
 }
 
 pub fn get_wrapped_markdown_lines(markdown: &str, width: usize) -> Vec<(Line<'_>, Style)> {
@@ -164,20 +166,20 @@ pub fn get_wrapped_bash_bubble_lines<'a>(
                 chars[chars.len() - 1].to_string(),
                 border_style,
             ));
-            lines.push((Line::from(spans), border_style));
+            lines.push((Line::from(spans), Style::default()));
         } else if line.starts_with('╭') || line.starts_with('╰') {
             lines.push((
                 Line::from(vec![Span::styled(line.clone(), border_style)]),
-                border_style,
+                Style::default(),
             ));
         } else {
             lines.push((
                 Line::from(vec![Span::styled(line.clone(), content_style)]),
-                content_style,
+                Style::default(),
             ));
         }
     }
-    lines.push((Line::from(""), content_style));
+    lines.push((Line::from(""), Style::reset()));
     lines
 }
 
