@@ -1,7 +1,7 @@
 use crate::app::{AppState, InputEvent, OutputEvent};
 use crate::services::bash_block::{render_bash_block, render_bash_block_rejected};
 use crate::services::helper_block::{
-    push_help_message, push_status_message, render_system_message,
+    push_error_message, push_help_message, push_status_message, render_system_message,
 };
 use crate::services::message::{
     Message, MessageContent, extract_and_truncate_command, extract_full_command,
@@ -116,6 +116,9 @@ pub fn update(
             state.account_info = account_info;
         }
         InputEvent::Tab => handle_tab(state),
+        InputEvent::Error(msg) => {
+            push_error_message(state, &msg);
+        }
         _ => {}
     }
     adjust_scroll(state, message_area_height, message_area_width);

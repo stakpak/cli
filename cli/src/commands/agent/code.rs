@@ -316,12 +316,28 @@ pub async fn run(ctx: AppConfig, config: RunInteractiveConfig) -> Result<(), Str
         })
         .map_err(|e| e.to_string())?;
 
-        let data = client.get_my_account().await?;
+        let data = match client.get_my_account().await {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = input_tx
+                    .send(InputEvent::Error(format!("Account error: {e}")))
+                    .await;
+                return Ok(());
+            }
+        };
         send_input_event(&input_tx, InputEvent::GetStatus(data.to_text())).await?;
 
         if let Some(checkpoint_id) = config.checkpoint_id {
-            let mut checkpoint_messages = get_checkpoint_messages(&client, &checkpoint_id).await?;
-
+            let mut checkpoint_messages =
+            match get_checkpoint_messages(&client, &checkpoint_id).await {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = input_tx
+                        .send(InputEvent::Error(format!("Checkpoint error: {e}")))
+                        .await;
+                    return Err(e.to_string());
+                }
+            };
             // Append checkpoint_id to the last assistant message if present
             if let Some(last_message) = checkpoint_messages
                 .iter_mut()
@@ -466,21 +482,25 @@ pub async fn run(ctx: AppConfig, config: RunInteractiveConfig) -> Result<(), Str
             }
             send_input_event(&input_tx, InputEvent::Loading(true)).await?;
 
-            let mut stream = client
+            let mut stream = match client
                 .chat_completion_stream(messages.clone(), Some(tools.clone()))
-                .await?;
-
-            let response = match process_responses_stream(&mut stream, &input_tx).await {
-                Ok(response) => response,
+                .await
+            {
+                Ok(s) => s,
                 Err(e) => {
-                    send_input_event(&input_tx, InputEvent::Loading(false)).await?;
-                    input_tx
-                        .send(InputEvent::Quit)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    send_input_event(&input_tx, InputEvent::Error(format!("Stream error: {e}"))).await?;
                     return Err(e.to_string());
                 }
             };
+
+                let response = match process_responses_stream(&mut stream, &input_tx).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        send_input_event(&input_tx, InputEvent::Loading(false)).await?;
+                        send_input_event(&input_tx, InputEvent::Error(format!("Response stream error: {e}"))).await?;
+                        return Err(e.to_string());
+                    }
+                };
             send_input_event(&input_tx, InputEvent::Loading(false)).await?;
 
             messages.push(response.choices[0].message.clone());
