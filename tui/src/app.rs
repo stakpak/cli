@@ -85,7 +85,7 @@ pub enum OutputEvent {
 
 impl AppState {
     pub fn new(helpers: Vec<&'static str>) -> Self {
-        let mut state= AppState {
+        let mut state = AppState {
             input: String::new(),
             cursor_position: 0,
             cursor_visible: true,
