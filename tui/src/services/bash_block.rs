@@ -1,4 +1,6 @@
+use super::message::{extract_full_command_arguments, extract_truncated_command_arguments};
 use crate::app::AppState;
+use crate::services::markdown::render_markdown_to_lines;
 use crate::services::message::{
     BubbleColors, Message, MessageContent, extract_command_purpose, get_command_type_name,
     wrap_text,
@@ -8,8 +10,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use stakpak_shared::models::integrations::openai::ToolCall;
 use uuid::Uuid;
-
-use super::message::{extract_full_command_arguments, extract_truncated_command_arguments};
 
 pub fn extract_bash_block_info(
     tool_call: &ToolCall,
@@ -75,13 +75,31 @@ pub fn render_styled_block(
     tool_type: &str,
     message_id: Option<Uuid>,
 ) -> Uuid {
+    // Check for a line like: path = *.md
+    let is_md = content
+        .lines()
+        .any(|line| line.trim().starts_with("path =") && line.trim().ends_with(".md"));
+
+    if is_md {
+        let processed = render_markdown_to_lines(content, terminal_size.width as usize);
+        for processed_line in processed {
+            state.messages.push(Message {
+                id: Uuid::new_v4(),
+                content: MessageContent::StyledBlock(vec![processed_line]),
+            });
+        }
+        return Uuid::new_v4();
+    }
+
     let terminal_width = terminal_size.width as usize;
     let content_width = if terminal_width > 4 {
         terminal_width - 4
     } else {
         40
     };
+
     let content_lines = content.split('\n').collect::<Vec<_>>();
+
     let inner_width = content_width;
     let horizontal_line = "─".repeat(inner_width + 2);
     let bottom_border = format!("╰{}╯", horizontal_line);
@@ -96,6 +114,7 @@ pub fn render_styled_block(
         }
     };
     let mut bubble_lines = vec![];
+
     bubble_lines.push(title_border);
     for line in &content_lines {
         let trimmed_line = line.trim_end();
