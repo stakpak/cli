@@ -239,7 +239,10 @@ fn handle_input_submitted(
     output_tx: &Sender<OutputEvent>,
 ) {
     let input_height = 3;
-    if state.show_sessions_dialog {
+    if !state.is_logged_in {
+        eprintln!("state.input: {}", state.input);
+        return;
+    } else if state.show_sessions_dialog {
         let selected = &state.sessions[state.session_selected];
         let _ = output_tx.try_send(OutputEvent::SwitchToSession(selected.id.to_string()));
         state.messages.clear();

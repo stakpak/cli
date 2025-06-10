@@ -81,13 +81,24 @@ pub async fn run_interactive(ctx: AppConfig, config: RunInteractiveConfig) -> Re
     // Spawn client task
     let client_handle: tokio::task::JoinHandle<Result<Vec<ChatMessage>, String>> =
         tokio::spawn(async move {
-            let client = Client::new(&ClientConfig {
+            let client = match Client::new(&ClientConfig {
                 api_key: ctx.api_key.clone(),
                 api_endpoint: ctx.api_endpoint.clone(),
-            })
-            .map_err(|e| e.to_string())?;
+            }) {
+                Ok(client) => client,
+                Err(e) => {
+                    let _ = send_input_event(&input_tx, InputEvent::Error(e.to_string())).await;
+                    return Err(e.to_string());
+                }
+            };
 
-            let data = client.get_my_account().await?;
+            let data = match client.get_my_account().await {
+                Ok(data) => data,
+                Err(e) => {
+                    let _ = send_input_event(&input_tx, InputEvent::Error(e.to_string())).await;
+                    return Err(e.to_string());
+                }
+            };
             send_input_event(&input_tx, InputEvent::GetStatus(data.to_text())).await?;
 
             if let Some(checkpoint_id) = config.checkpoint_id {

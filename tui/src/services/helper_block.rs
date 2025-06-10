@@ -195,7 +195,41 @@ pub fn render_system_message(state: &mut AppState, msg: &str) {
     });
 }
 
+pub fn render_onboarding_message(state: &mut AppState) {
+    let steps = vec![
+        "1. Login to Stakpak from here: https://stakpak.dev/auth/signin",
+        "2. Go to your profile in the top right corner, and click on 'API Keys'",
+        "3. Create a new API Key, and copy it",
+        "4. Paste the API Key down below",
+    ];
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![Span::styled(
+        "🤖 Stakpak Onboarding Process",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    for step in steps {
+        lines.push(Line::from(vec![Span::styled(
+            step,
+            Style::default().fg(Color::Gray),
+        )]));
+    }
+    state.messages.push(Message {
+        id: Uuid::new_v4(),
+        content: MessageContent::StyledBlock(lines),
+    });
+}
+
 pub fn push_error_message(state: &mut AppState, error: &str) {
+    let mut error_message = error.to_string();
+    if error.contains("API Key not found") {
+        state.is_logged_in = false;
+        render_onboarding_message(state);
+        return;
+    } else if error.contains("error sending request for url") {
+        error_message = "Failed to connect to Stakpak services. Please check your internet connection and try again".to_string();
+    }
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
     let lines = vec![
@@ -204,7 +238,7 @@ pub fn push_error_message(state: &mut AppState, error: &str) {
                 "[Error] ",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(error, Style::default().fg(Color::Red)),
+            Span::styled(error_message, Style::default().fg(Color::Red)),
         ]),
         Line::from(""),
     ];

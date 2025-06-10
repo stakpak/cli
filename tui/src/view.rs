@@ -100,12 +100,19 @@ pub fn view(f: &mut Frame, state: &AppState) {
         render_confirmation_dialog(f, state);
     }
 
+    if !state.is_logged_in {
+        input_area.y = 17;
+    }
+
     // Only render input, dropdown, and hint if dialog is not open and sessions dialog is not open
     if !state.is_dialog_open && !state.show_sessions_dialog {
         render_multiline_input(f, state, input_area);
-        render_helper_dropdown(f, state, dropdown_area);
-        if !dropdown_showing {
-            render_hint_or_shortcuts(f, state, hint_area);
+
+        if state.is_logged_in {
+            render_helper_dropdown(f, state, dropdown_area);
+            if !dropdown_showing {
+                render_hint_or_shortcuts(f, state, hint_area);
+            }
         }
     }
     if state.show_sessions_dialog {
@@ -429,13 +436,22 @@ fn render_multiline_input(f: &mut Frame, state: &AppState, area: Rect) {
     }
 
     // Render the input widget
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    if !state.is_logged_in {
+        block = block.title(Span::styled(
+            "Paste your API key",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     let input_widget = Paragraph::new(lines)
         .style(Style::default())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
+        .block(block)
         .wrap(ratatui::widgets::Wrap { trim: false });
 
     f.render_widget(input_widget, area);
