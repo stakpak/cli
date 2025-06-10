@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ['v*']
   # pull_request:
   #   branches: [main]
 
@@ -147,11 +147,11 @@ jobs:
           curl -L "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/stakpak-darwin-x86_64.tar.gz" -o stakpak-darwin-x86_64.tar.gz
           curl -L "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/stakpak-darwin-aarch64.tar.gz" -o stakpak-darwin-aarch64.tar.gz
           curl -L "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/stakpak-linux-x86_64.tar.gz" -o stakpak-linux-x86_64.tar.gz
-
+          
           SHA256_DARWIN_X64=$(sha256sum stakpak-darwin-x86_64.tar.gz | cut -d ' ' -f 1)
           SHA256_DARWIN_ARM=$(sha256sum stakpak-darwin-aarch64.tar.gz | cut -d ' ' -f 1)
           SHA256_LINUX_X64=$(sha256sum stakpak-linux-x86_64.tar.gz | cut -d ' ' -f 1)
-
+          
           cat > stakpak.rb << EOF
           class Stakpak < Formula
             desc "Stakpak CLI tool"
@@ -178,7 +178,7 @@ jobs:
             end
           end
           EOF
-
+          
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add stakpak.rb
