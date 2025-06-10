@@ -1,6 +1,6 @@
 use crate::services::markdown::render_markdown_to_lines;
 use ratatui::style::Color;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use regex::Regex;
 use serde_json::Value;
@@ -23,7 +23,7 @@ pub enum MessageContent {
     Markdown(String),
     BashBubble {
         title: String,
-        content: Vec<String>,
+        content: Vec<Line<'static>>,
         colors: BubbleColors,
         tool_type: String,
     },
@@ -138,46 +138,72 @@ pub fn get_wrapped_markdown_lines(markdown: &str, width: usize) -> Vec<(Line<'_>
     result
 }
 
-pub fn get_wrapped_bash_bubble_lines<'a>(
-    _title: &'a str,
-    content: &'a [String],
+pub fn get_wrapped_bash_bubble_lines(
+    _title: &str,
+    content: &[Line<'static>],
     colors: &BubbleColors,
-) -> Vec<(Line<'a>, Style)> {
-    let _title_style = Style::default()
-        .fg(colors.title_color)
-        .add_modifier(Modifier::BOLD);
+) -> Vec<(Line<'static>, Style)> {
     let border_style = Style::default().fg(colors.border_color);
-    let content_style = Style::default().fg(colors.content_color);
     let mut lines = Vec::new();
-    // lines.push((
-    //     Line::from(vec![Span::styled(title, title_style)]),
-    //     title_style,
-    // ));
+
     for line in content.iter() {
-        let chars: Vec<char> = line.chars().collect();
-        if chars.len() > 2 && chars[0] == '│' && chars[chars.len() - 1] == '│' {
-            let mut spans = Vec::new();
-            spans.push(Span::styled(chars[0].to_string(), border_style));
-            let content: String = chars[1..chars.len() - 1].iter().collect();
-            spans.push(Span::styled(content, content_style));
-            spans.push(Span::styled(
-                chars[chars.len() - 1].to_string(),
-                border_style,
-            ));
-            lines.push((Line::from(spans), border_style));
-        } else if line.starts_with('╭') || line.starts_with('╰') {
+        let line_str = line.to_string();
+
+        // Check if this is a border line
+        if line_str.starts_with('╭')
+            || line_str.starts_with('╰')
+            || line_str.starts_with('├')
+            || line_str.starts_with('╯')
+        {
+            // For border lines, apply border style to the whole line
             lines.push((
-                Line::from(vec![Span::styled(line.clone(), border_style)]),
+                Line::from(vec![Span::styled(line_str, border_style)]),
                 border_style,
             ));
+        } else if line_str.starts_with('│') && line_str.ends_with('│') {
+            // This is a content line with borders
+            // Check if the line already has styled spans (from markdown rendering)
+            if line.spans.len() > 1 {
+                // Line already has styled spans from markdown - preserve them!
+                lines.push((line.clone(), Style::default()));
+            } else {
+                // Plain text line - apply the default content style
+                let chars: Vec<char> = line_str.chars().collect();
+                if chars.len() >= 4 {
+                    // "│ " at start and " │" at end
+                    let mut spans = Vec::new();
+
+                    // Add the left border
+                    spans.push(Span::styled("│ ", border_style));
+
+                    // Extract the content between borders
+                    let content_start = 2; // After "│ "
+                    let content_end = chars.len() - 2; // Before " │"
+
+                    if content_end > content_start {
+                        let content: String = chars[content_start..content_end].iter().collect();
+                        spans.push(Span::styled(
+                            content,
+                            Style::default().fg(colors.content_color),
+                        ));
+                    }
+
+                    // Add the right border
+                    spans.push(Span::styled(" │", border_style));
+
+                    lines.push((Line::from(spans), Style::default()));
+                } else {
+                    // Malformed line, just use it as-is
+                    lines.push((line.clone(), Style::default()));
+                }
+            }
         } else {
-            lines.push((
-                Line::from(vec![Span::styled(line.clone(), content_style)]),
-                content_style,
-            ));
+            // Other lines - preserve as-is
+            lines.push((line.clone(), Style::default()));
         }
     }
-    lines.push((Line::from(""), content_style));
+
+    lines.push((Line::from(""), Style::default()));
     lines
 }
 
