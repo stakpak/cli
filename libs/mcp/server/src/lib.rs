@@ -10,10 +10,9 @@ pub mod tools;
 
 pub struct MCPServerConfig {
     pub api: ClientConfig,
+    pub bind_address: String,
     pub redact_secrets: bool,
 }
-
-const BIND_ADDRESS: &str = "0.0.0.0:65535";
 
 /// npx @modelcontextprotocol/inspector cargo run mcp
 pub async fn start_server(
@@ -23,11 +22,8 @@ pub async fn start_server(
     if config.redact_secrets {
         // Initialize gitleaks configuration in a background task to avoid blocking server startup
         tokio::spawn(async {
-            match std::panic::catch_unwind(|| stakpak_shared::secrets::initialize_gitleaks_config())
-            {
-                Ok(_rule_count) => {
-                    // Gitleaks rules initialized successfully
-                }
+            match std::panic::catch_unwind(stakpak_shared::secrets::initialize_gitleaks_config) {
+                Ok(_rule_count) => {}
                 Err(_) => {
                     // Failed to initialize, will initialize on first use
                 }
@@ -35,14 +31,13 @@ pub async fn start_server(
         });
     }
 
-    // Create an instance of our counter router
     let service = StreamableHttpService::new(
         move || Tools::new(config.api.clone(), config.redact_secrets),
         LocalSessionManager::default().into(),
         Default::default(),
     );
     let router = axum::Router::new().nest_service("/mcp", service);
-    let tcp_listener = tokio::net::TcpListener::bind(BIND_ADDRESS).await?;
+    let tcp_listener = tokio::net::TcpListener::bind(config.bind_address.clone()).await?;
     axum::serve(tcp_listener, router)
         .with_graceful_shutdown(async move {
             if let Some(mut shutdown_rx) = shutdown_rx {
@@ -53,5 +48,6 @@ pub async fn start_server(
             }
         })
         .await?;
+
     Ok(())
 }

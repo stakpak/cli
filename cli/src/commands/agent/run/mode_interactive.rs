@@ -1,15 +1,17 @@
-use crate::commands::agent::code::checkpoint::{
+use crate::commands::agent::run::checkpoint::{
     extract_checkpoint_messages_and_tool_calls, get_checkpoint_messages,
     get_messages_from_checkpoint_output,
 };
-use crate::commands::agent::code::helpers::{
+use crate::commands::agent::run::helpers::{
     add_local_context, convert_tools_map, tool_result, user_message,
 };
-use crate::commands::agent::code::stream::process_responses_stream;
-use crate::commands::agent::code::tooling::{list_sessions, run_tool_call};
-use crate::commands::agent::code::tui::{send_input_event, send_tool_call};
+use crate::commands::agent::run::stream::process_responses_stream;
+use crate::commands::agent::run::tooling::{list_sessions, run_tool_call};
+use crate::commands::agent::run::tui::{send_input_event, send_tool_call};
 use crate::config::AppConfig;
+use crate::utils::check_update::get_latest_cli_version;
 use crate::utils::local_context::LocalContext;
+use crate::utils::network;
 use stakpak_api::{Client, ClientConfig};
 use stakpak_mcp_client::ClientManager;
 use stakpak_mcp_server::MCPServerConfig;
@@ -23,7 +25,7 @@ pub struct RunInteractiveConfig {
     pub redact_secrets: bool,
 }
 
-pub async fn run(ctx: AppConfig, config: RunInteractiveConfig) -> Result<(), String> {
+pub async fn run_interactive(ctx: AppConfig, config: RunInteractiveConfig) -> Result<(), String> {
     let mut messages: Vec<ChatMessage> = Vec::new();
     let mut tools_queue: Vec<ToolCall> = Vec::new();
     let (input_tx, input_rx) = tokio::sync::mpsc::channel::<InputEvent>(100);
@@ -32,6 +34,8 @@ pub async fn run(ctx: AppConfig, config: RunInteractiveConfig) -> Result<(), Str
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
     let ctx_clone = ctx.clone();
+    let bind_address = network::find_available_bind_address_descending().await?;
+    let local_mcp_server_host = format!("http://{}", bind_address);
 
     // Spawn MCP server task
     let mcp_handle = tokio::spawn(async move {
@@ -42,6 +46,7 @@ pub async fn run(ctx: AppConfig, config: RunInteractiveConfig) -> Result<(), Str
                     api_endpoint: ctx_clone.api_endpoint.clone(),
                 },
                 redact_secrets: config.redact_secrets,
+                bind_address,
             },
             Some(shutdown_rx),
         )
@@ -49,15 +54,19 @@ pub async fn run(ctx: AppConfig, config: RunInteractiveConfig) -> Result<(), Str
     });
 
     // Initialize clients and tools
-    let clients = ClientManager::new(ctx.mcp_server_host.clone(), Some(mcp_progress_tx))
-        .await
-        .map_err(|e| e.to_string())?;
+    let clients = ClientManager::new(
+        ctx.mcp_server_host.unwrap_or(local_mcp_server_host),
+        Some(mcp_progress_tx),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let tools_map = clients.get_tools().await.map_err(|e| e.to_string())?;
     let tools = convert_tools_map(&tools_map);
 
     // Spawn TUI task
     let tui_handle = tokio::spawn(async move {
-        let _ = stakpak_tui::run_tui(input_rx, output_tx, shutdown_tx)
+        let latest_version = get_latest_cli_version().await;
+        let _ = stakpak_tui::run_tui(input_rx, output_tx, shutdown_tx, latest_version.ok())
             .await
             .map_err(|e| e.to_string());
     });

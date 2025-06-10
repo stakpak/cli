@@ -2914,7 +2914,7 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
 name = "stakpak"
-version = "0.1.88"
+version = "0.1.93"
 dependencies = [
  "chrono",
  "clap",
@@ -2927,6 +2927,7 @@ dependencies = [
  "rust_socketio",
  "serde",
  "serde_json",
+ "sha2",
  "stakpak-api",
  "stakpak-mcp-client",
  "stakpak-mcp-server",
@@ -2945,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "stakpak-api"
-version = "0.1.88"
+version = "0.1.93"
 dependencies = [
  "chrono",
  "eventsource-stream",
@@ -2960,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "stakpak-mcp-client"
-version = "0.1.88"
+version = "0.1.93"
 dependencies = [
  "anyhow",
  "futures",
@@ -2976,10 +2977,11 @@ dependencies = [
 
 [[package]]
 name = "stakpak-mcp-server"
-version = "0.1.88"
+version = "0.1.93"
 dependencies = [
  "anyhow",
  "axum",
+ "rand 0.9.1",
  "rmcp",
  "serde",
  "serde_json",
@@ -2992,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "stakpak-shared"
-version = "0.1.88"
+version = "0.1.93"
 dependencies = [
  "once_cell",
  "regex",
@@ -3004,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "stakpak-tui"
-version = "0.1.88"
+version = "0.1.93"
 dependencies = [
  "chrono",
  "crossterm 0.29.0",

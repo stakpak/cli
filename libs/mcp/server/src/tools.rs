@@ -1,18 +1,22 @@
+use rand::Rng;
 use rmcp::{
     Error as McpError, RoleServer, ServerHandler, model::*, schemars, service::RequestContext, tool,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use stakpak_api::models::SimpleDocument;
 use stakpak_api::{Client, ClientConfig};
 use stakpak_api::{GenerationResult, ToolsCallParams};
+use stakpak_shared::local_store::LocalStore;
 use stakpak_shared::secrets::{redact_secrets, restore_secrets};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 
 use stakpak_shared::models::integrations::openai::ToolCallResultProgress;
@@ -60,13 +64,7 @@ impl Tools {
 
     /// Load the redaction map from the session file
     fn load_session_redaction_map(&self) -> HashMap<String, String> {
-        let path = ".env.stakpak.session.secrets";
-
-        if !Path::new(&path).exists() {
-            return HashMap::new();
-        }
-
-        match fs::read_to_string(&path) {
+        match LocalStore::read_session_data("secrets.json") {
             Ok(content) => {
                 if content.trim().is_empty() {
                     return HashMap::new();
@@ -81,7 +79,7 @@ impl Tools {
                 }
             }
             Err(e) => {
-                error!("Failed to read session redaction map file: {}", e);
+                warn!("Failed to read session redaction map file: {}", e);
                 HashMap::new()
             }
         }
@@ -89,11 +87,9 @@ impl Tools {
 
     /// Save the redaction map to the session file
     fn save_session_redaction_map(&self, redaction_map: &HashMap<String, String>) {
-        let path = ".env.stakpak.session.secrets";
-
         match serde_json::to_string_pretty(redaction_map) {
             Ok(json_content) => {
-                if let Err(e) = fs::write(&path, json_content) {
+                if let Err(e) = LocalStore::write_session_data("secrets.json", &json_content) {
                     error!("Failed to save session redaction map: {}", e);
                 }
             }
@@ -129,7 +125,9 @@ impl Tools {
             return content.to_string();
         }
 
-        let redaction_result = redact_secrets(content, path);
+        // TODO: this is not thread safe, we need to use a mutex or an actor to protect the redaction map
+        let existing_redaction_map = self.load_session_redaction_map();
+        let redaction_result = redact_secrets(content, path, &existing_redaction_map);
 
         // Add new redactions to session map
         self.add_to_session_redaction_map(&redaction_result.redaction_map);
@@ -149,7 +147,7 @@ SECRET HANDLING:
 - You can use these placeholders in subsequent commands - they will be automatically restored to actual values before execution
 - Example: If you see 'export API_KEY=[REDACTED_SECRET:api-key:abc123]', you can use '[REDACTED_SECRET:api-key:abc123]' in later commands
 
-If the output is too long, it will be truncated from the middle."
+If the command's output exceeds 300 lines the result will be truncated and the full output will be saved to a file in the current directory"
     )]
     async fn run_command(
         &self,
@@ -161,6 +159,8 @@ If the output is too long, it will be truncated from the middle."
         #[schemars(description = "Optional working directory for command execution")]
         work_dir: Option<String>,
     ) -> Result<CallToolResult, McpError> {
+        const MAX_LINES: usize = 300;
+
         let command_clone = command.clone();
 
         // Restore secrets in the command before execution
@@ -265,20 +265,59 @@ If the output is too long, it will be truncated from the middle."
             result.push_str(&format!("Command exited with code {}\n", exit_code));
         }
 
+        let output_lines = result.lines().collect::<Vec<_>>();
+
+        result = if output_lines.len() >= MAX_LINES {
+            // Create a output file to store the full output
+            let output_file = format!(
+                "command.output.{:06x}.txt",
+                rand::rng().random_range(0..=0xFFFFFF)
+            );
+            let output_file_path =
+                LocalStore::write_session_data(&output_file, &result).map_err(|e| {
+                    error!("Failed to write session data to {}: {}", output_file, e);
+                    McpError::internal_error(
+                        "Failed to write session data",
+                        Some(json!({ "error": e.to_string() })),
+                    )
+                })?;
+
+            format!(
+                "Showing the last {} / {} output lines. Full output saved to {}\n...\n{}",
+                MAX_LINES,
+                output_lines.len(),
+                output_file_path,
+                output_lines
+                    .into_iter()
+                    .rev()
+                    .take(MAX_LINES)
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        } else {
+            result
+        };
+
+        if result.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("No output")]));
+        }
+
         let redacted_output = self.redact_and_store_secrets(&result, None);
-        Ok(CallToolResult::success(vec![Content::text(clip_output(
+
+        Ok(CallToolResult::success(vec![Content::text(
             &redacted_output,
-        ))]))
+        )]))
     }
 
     #[tool(
-        description = "Generate configurations and infrastructure as code with suggested file names using a given prompt. This code generation only works for Terraform, Kubernetes, Dockerfile, and Github Actions. If save_files is true, the generated files will be saved to the filesystem. The printed shell output will redact any secrets, will be replaced with a placeholder [REDACTED_SECRET:rule-id:short-hash]"
+        description = "Advanced Generate/Edit devops configurations and infrastructure as code with suggested file names using a given prompt. This code generation/editing only works for Terraform, Kubernetes, Dockerfile, and Github Actions. If save_files is true, the generated files will be saved to the filesystem. The printed shell output will redact any secrets, will be replaced with a placeholder [REDACTED_SECRET:rule-id:short-hash]"
     )]
     async fn generate_code(
         &self,
         #[tool(param)]
         #[schemars(
-            description = "Prompt to use to generate code, this should be as detailed as possible. Make sure to specify output file paths if you want to save the files to the filesystem."
+            description = "Prompt to use to generate code, this should be as detailed as possible. Make sure to specify the paths of the files to be created or modified if you want to save changes to the filesystem."
         )]
         prompt: String,
         #[tool(param)]
@@ -291,6 +330,11 @@ If the output is too long, it will be truncated from the middle."
             description = "Whether to save the generated files to the filesystem (default: false)"
         )]
         save_files: Option<bool>,
+        #[tool(param)]
+        #[schemars(
+            description = "Optional list of file paths to include as context for the generation, add any files you want to edit, or that you want to use as context for the generation (default: empty)"
+        )]
+        context: Option<Vec<String>>,
     ) -> Result<CallToolResult, McpError> {
         let client = Client::new(&self.api_config).map_err(|e| {
             error!("Failed to create client: {}", e);
@@ -306,13 +350,44 @@ If the output is too long, it will be truncated from the middle."
             "markdown"
         };
 
+        // Convert context paths to Vec<Document>
+        let context_documents = if let Some(context_paths) = context {
+            context_paths
+                .into_iter()
+                .map(|path| {
+                    let uri = format!("file://{}", path);
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => {
+                            // Redact secrets in the file content
+                            let redacted_content =
+                                self.redact_and_store_secrets(&content, Some(&path));
+                            SimpleDocument {
+                                uri,
+                                content: redacted_content,
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to read context file {}: {}", path, e);
+                            // Add empty document with error message
+                            SimpleDocument {
+                                uri,
+                                content: format!("Error reading file: {}", e),
+                            }
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
         let response = match client
             .call_mcp_tool(&ToolsCallParams {
                 name: "generate_code".to_string(),
                 arguments: json!({
                     "prompt": prompt,
                     "provisioner": provisioner.to_string(),
-                    "context": Vec::<serde_json::Value>::new(),
+                    "context": context_documents,
                     "output_format": output_format,
                 }),
             })
@@ -351,78 +426,159 @@ If the output is too long, it will be truncated from the middle."
                     )
                 })?;
 
-            // Group blocks by document_uri
-            let mut grouped_blocks: HashMap<String, Vec<&stakpak_api::Block>> = HashMap::new();
-            for block in &generation_result.created_blocks {
-                grouped_blocks
-                    .entry(block.document_uri.clone())
-                    .or_default()
-                    .push(block);
-            }
+            let mut new_files: Vec<String> = Vec::new();
+            let mut failed_edits = Vec::new();
 
-            // Process each file
-            for (document_uri, mut blocks) in grouped_blocks {
-                // Sort blocks by start line number
-                blocks.sort_by(|a, b| a.start_point.row.cmp(&b.start_point.row));
-
-                // Concatenate the code blocks
-                let file_content = blocks
-                    .iter()
-                    .map(|block| block.code.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                // Strip file:/// prefix from document_uri to get the file path
-                let file_path = document_uri
-                    .strip_prefix("file:///")
-                    .unwrap_or(&document_uri);
+            for edit in generation_result.edits.unwrap_or_default() {
+                let file_path = Path::new(
+                    edit.document_uri
+                        .strip_prefix("file:///")
+                        .unwrap_or(&edit.document_uri),
+                );
 
                 // Create parent directories if they don't exist
-                if let Some(parent) = Path::new(file_path).parent() {
+                if let Some(parent) = file_path.parent() {
                     if !parent.exists() {
                         if let Err(e) = fs::create_dir_all(parent) {
                             error!("Failed to create directory {}: {}", parent.display(), e);
+                            failed_edits.push(format!(
+                                "Failed to create directory {} for file {}: {}\nEdit content:\n{}",
+                                parent.display(),
+                                file_path.display(),
+                                e,
+                                edit
+                            ));
                             continue;
                         }
                     }
                 }
 
-                // Write the file
-                let redacted_content =
-                    self.redact_and_store_secrets(&file_content, Some(&file_path));
-                match fs::write(file_path, &file_content) {
-                    Ok(_) => {
-                        result_report.push_str(&format!(
-                            "Created file {}\n```\n{}\n```\n\n",
-                            file_path, redacted_content
-                        ));
+                // Check if file exists, if not create it
+                if !file_path.exists() {
+                    match fs::File::create(file_path) {
+                        Ok(_) => {
+                            new_files.push(file_path.to_str().unwrap_or_default().to_string());
+                        }
+                        Err(e) => {
+                            error!("Failed to create file {}: {}", file_path.display(), e);
+                            failed_edits.push(format!(
+                                "Failed to create file {}: {}\nEdit content:\n{}",
+                                file_path.display(),
+                                e,
+                                edit
+                            ));
+                            continue;
+                        }
                     }
-                    Err(e) => {
-                        result_report.push_str(&format!(
-                            "Failed to create file {} with error: {}\n```\n{}\n```\n\n",
-                            file_path, e, redacted_content
+                }
+
+                let redacted_edit =
+                    self.redact_and_store_secrets(&edit.to_string(), file_path.to_str());
+
+                if edit.old_str.is_empty() {
+                    // This is an addition to a file (appending content)
+                    match fs::OpenOptions::new().append(true).open(file_path) {
+                        Ok(mut file) => {
+                            if let Err(e) = file.write_all(edit.new_str.as_bytes()) {
+                                error!("Failed to append to file {}: {}", file_path.display(), e);
+                                failed_edits.push(format!(
+                                    "Failed to append content to file {}: {}\nEdit content:\n{}",
+                                    file_path.display(),
+                                    e,
+                                    redacted_edit
+                                ));
+                                continue;
+                            }
+                            result_report.push_str(&format!("{}\n\n", redacted_edit));
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to open file for appending {}: {}",
+                                file_path.display(),
+                                e
+                            );
+                            failed_edits.push(format!(
+                                "Failed to open file {} for appending: {}\nEdit content:\n{}",
+                                file_path.display(),
+                                e,
+                                redacted_edit
+                            ));
+                            continue;
+                        }
+                    }
+                } else {
+                    // This is a modification to a file (replacing content)
+                    // Read the current file content
+                    let current_content = match fs::read_to_string(file_path) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            error!("Failed to read file {}: {}", file_path.display(), e);
+                            failed_edits.push(format!(
+                                "Failed to read file {} for content replacement: {}\nEdit content:\n{}",
+                                file_path.display(),
+                                e,
+                                edit
+                            ));
+                            continue;
+                        }
+                    };
+
+                    // Verify that the file contains the old string
+                    if !current_content.contains(&edit.old_str) {
+                        error!(
+                            "Search string not found in file {}, skipping edit: \n{}",
+                            file_path.display(),
+                            edit
+                        );
+                        failed_edits.push(format!(
+                            "Search string not found in file {} - the file content may have changed or the search string is incorrect.\nEdit content:\n{}",
+                            file_path.display(),
+                            edit
                         ));
+                        continue;
+                    }
+
+                    // Replace old content with new content
+                    let updated_content = current_content.replace(&edit.old_str, &edit.new_str);
+                    match fs::write(file_path, updated_content) {
+                        Ok(_) => {
+                            result_report.push_str(&format!("{}\n\n", redacted_edit));
+                        }
+                        Err(e) => {
+                            error!("Failed to write to file {}: {}", file_path.display(), e);
+                            failed_edits.push(format!(
+                                "Failed to write updated content to file {}: {}\nEdit content:\n{}",
+                                file_path.display(),
+                                e,
+                                redacted_edit
+                            ));
+                            continue;
+                        }
                     }
                 }
             }
 
-            // ignore modified blocks
-            for block in generation_result.modified_blocks {
-                result_report.push_str(&format!(
-                    "Ignored modified block:\n{}\n```\n{}\n```\n\n",
-                    block.document_uri, block.code
-                ));
+            // Build the final result report
+            let mut final_report = String::new();
+
+            if !new_files.is_empty() {
+                final_report.push_str(&format!("Created files: {}\n\n", new_files.join(", ")));
             }
 
-            // ignore removed blocks
-            for block in generation_result.removed_blocks {
-                result_report.push_str(&format!(
-                    "Ignored removed block:\n{}\n```\n{}\n```\n\n",
-                    block.document_uri, block.code
-                ));
+            if !result_report.is_empty() {
+                final_report.push_str("Successfully applied edits:\n");
+                final_report.push_str(&result_report);
             }
 
-            Ok(CallToolResult::success(vec![Content::text(result_report)]))
+            if !failed_edits.is_empty() {
+                final_report.push_str("\n❌ Failed Edits:\n");
+                for (i, failed_edit) in failed_edits.iter().enumerate() {
+                    final_report.push_str(&format!("{}. {}\n", i + 1, failed_edit));
+                }
+                final_report.push_str("\nPlease review the failed edits above and take appropriate action to resolve the issues.\n");
+            }
+
+            Ok(CallToolResult::success(vec![Content::text(final_report)]))
         } else {
             Ok(CallToolResult::success(response))
         }
@@ -485,7 +641,7 @@ SECRET HANDLING:
 - These placeholders represent actual secret values that are safely stored for later use
 - You can reference these placeholders when working with the file content
 
-If the output is too long, it will be truncated from the middle."
+A maximum of 300 lines will be shown at a time, the rest will be truncated."
     )]
     fn view(
         &self,
@@ -498,6 +654,8 @@ If the output is too long, it will be truncated from the middle."
         )]
         view_range: Option<[i32; 2]>,
     ) -> Result<CallToolResult, McpError> {
+        const MAX_LINES: usize = 300;
+
         let path_obj = Path::new(&path);
 
         if !path_obj.exists() {
@@ -534,12 +692,6 @@ If the output is too long, it will be truncated from the middle."
                         let prefix = if is_last { "└── " } else { "├── " };
                         match entry {
                             Ok(entry) => {
-                                // Skip the session secrets file
-                                if entry.file_name().to_string_lossy()
-                                    == ".env.stakpak.session.secrets"
-                                {
-                                    continue;
-                                }
                                 let suffix = match entry.file_type() {
                                     Ok(ft) if ft.is_dir() => "/",
                                     Ok(_) => "",
@@ -589,25 +741,74 @@ If the output is too long, it will be truncated from the middle."
                         }
 
                         let selected_lines = &lines[start_idx..end_idx];
-                        let mut result =
-                            format!("File: {} (lines {}-{})\n", path, start_idx + 1, end_idx);
-                        for (i, line) in selected_lines.iter().enumerate() {
-                            result.push_str(&format!("{:4}: {}\n", start_idx + i + 1, line));
+                        if selected_lines.len() <= MAX_LINES {
+                            format!(
+                                "File: {} (lines {}-{})\n{}",
+                                path,
+                                start_idx + 1,
+                                end_idx,
+                                selected_lines
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, line)| format!("{:3}: {}", start_idx + i + 1, line))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )
+                        } else {
+                            // truncate the extra lines
+                            let selected_lines =
+                                selected_lines.iter().take(MAX_LINES).collect::<Vec<_>>();
+
+                            format!(
+                                "File: {} (showing lines {}-{}, only the first {} lines of your view range)\n{}\n...",
+                                path,
+                                start_idx + 1,
+                                start_idx + 1 + MAX_LINES,
+                                MAX_LINES,
+                                selected_lines
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, line)| format!("{:4}: {}", start_idx + i + 1, line))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )
                         }
-                        result
                     } else {
                         let lines: Vec<&str> = content.lines().collect();
-                        let mut result = format!("File: {} ({} lines)\n", path, lines.len());
-                        for (i, line) in lines.iter().enumerate() {
-                            result.push_str(&format!("{:4}: {}\n", i + 1, line));
+                        if lines.len() <= MAX_LINES {
+                            format!(
+                                "File: {} ({} lines)\n{}",
+                                path,
+                                lines.len(),
+                                lines
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, line)| format!("{:3}: {}", i + 1, line))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )
+                        } else {
+                            // truncate the extra lines
+                            let selected_lines = lines.iter().take(MAX_LINES).collect::<Vec<_>>();
+                            format!(
+                                "File: {} (showing {} / {} lines)\n{}\n...",
+                                path,
+                                MAX_LINES,
+                                lines.len(),
+                                selected_lines
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, line)| format!("{:3}: {}", i + 1, line))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )
                         }
-                        result
                     };
 
                     let redacted_result = self.redact_and_store_secrets(&result, Some(&path));
-                    Ok(CallToolResult::success(vec![Content::text(clip_output(
+                    Ok(CallToolResult::success(vec![Content::text(
                         &redacted_result,
-                    ))]))
+                    )]))
                 }
                 Err(e) => Ok(CallToolResult::error(vec![
                     Content::text("READ_ERROR"),
@@ -868,84 +1069,9 @@ impl ServerHandler for Tools {
     }
 }
 
-pub fn clip_output(output: &str) -> String {
-    const MAX_OUTPUT_LENGTH: usize = 4000;
-    // Truncate long output
-    if output.len() > MAX_OUTPUT_LENGTH {
-        let offset = MAX_OUTPUT_LENGTH / 2;
-        let start = output
-            .char_indices()
-            .nth(offset)
-            .map(|(i, _)| i)
-            .unwrap_or(output.len());
-        let end = output
-            .char_indices()
-            .rev()
-            .nth(offset)
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-
-        return format!(
-            "{}\n\n[...this result was truncated because it's too long...]\n\n{}",
-            &output[..start],
-            &output[end..]
-        );
-    }
-
-    output.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_clip_output_empty_string() {
-        let output = "";
-        assert_eq!(clip_output(output), "");
-    }
-
-    #[test]
-    fn test_clip_output_short_string() {
-        let output = "This is a short string that should not be clipped.";
-        assert_eq!(clip_output(output), output);
-    }
-
-    #[test]
-    fn test_clip_output_exact_length() {
-        // Create a string with exactly MAX_OUTPUT_LENGTH characters
-        let output = "a".repeat(4000);
-        assert_eq!(clip_output(&output), output);
-    }
-
-    #[test]
-    fn test_clip_output_long_string() {
-        // Create a string longer than MAX_OUTPUT_LENGTH
-        let output = "a".repeat(6000);
-        let result = clip_output(&output);
-
-        // Check that result has the expected format with [clipped] marker
-        assert!(result.contains("[...this result was truncated because it's too long...]"));
-
-        // Check the total length is as expected (2000 + 2000 + length of "\n[clipped]\n")
-        let expected_length =
-            2000 + 2001 + "\n\n[...this result was truncated because it's too long...]\n\n".len();
-        assert_eq!(result.len(), expected_length);
-    }
-
-    #[test]
-    fn test_clip_output_unicode_characters() {
-        // Create a string with unicode characters that's longer than MAX_OUTPUT_LENGTH
-        // Using characters like emoji that take more than one byte
-        let emoji_repeat = "😀🌍🚀".repeat(1500); // Each emoji is multiple bytes
-        let result = clip_output(&emoji_repeat);
-
-        assert!(result.contains("[...this result was truncated because it's too long...]"));
-
-        // Verify the string was properly split on character boundaries
-        // by checking that we don't have any invalid UTF-8 sequences
-        assert!(result.chars().all(|c| c.is_ascii() || c.len_utf8() > 1));
-    }
 
     #[test]
     fn test_session_redaction_map() {
@@ -957,12 +1083,10 @@ mod tests {
         let tools = Tools::new(api_config, true);
 
         // Test that session file path is as expected
-        let path = ".env.stakpak.session.secrets";
-        assert!(path.contains("stakpak"));
-        assert!(path.contains("secrets"));
+        let path = LocalStore::get_local_session_store_path().join("secrets.json");
 
         // Clean up any existing session file before test
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.clone());
 
         // Test adding redactions to session map
         let mut test_redactions = HashMap::new();
@@ -978,10 +1102,8 @@ mod tests {
         tools.add_to_session_redaction_map(&test_redactions);
 
         // Verify the session file was created and contains valid JSON
-        assert!(
-            std::path::Path::new(&path).exists(),
-            "Session file should be created"
-        );
+        assert!(path.exists(), "Session file should be created");
+
         let file_content =
             std::fs::read_to_string(&path).expect("Should be able to read session file");
         let json_value: serde_json::Value =
@@ -1011,7 +1133,7 @@ mod tests {
         assert_eq!(restored, expected);
 
         // Clean up the test session file
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1044,7 +1166,7 @@ mod tests {
         );
 
         // Clean up the test session file
-        let path = ".env.stakpak.session.secrets";
+        let path = LocalStore::get_local_session_store_path().join("secrets.json");
         let _ = std::fs::remove_file(&path);
     }
 }

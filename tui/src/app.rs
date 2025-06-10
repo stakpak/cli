@@ -16,7 +16,7 @@ pub struct SessionInfo {
 
 #[derive(Debug, PartialEq)]
 pub enum LoadingType {
-    LLM,
+    Llm,
     Sessions,
 }
 
@@ -96,7 +96,30 @@ pub enum OutputEvent {
 }
 
 impl AppState {
-    pub fn new(helpers: Vec<&'static str>) -> Self {
+    pub fn new(helpers: Vec<&'static str>, latest_version: Option<String>) -> Self {
+        let version_message = match latest_version {
+            Some(version) => {
+                if version != format!("v{}", env!("CARGO_PKG_VERSION")) {
+                    Message::info(
+                        format!(
+                            "🚀 Update available!  v{}  →  {} ✨   ",
+                            env!("CARGO_PKG_VERSION"),
+                            version
+                        ),
+                        Some(Style::default().fg(ratatui::style::Color::Yellow)),
+                    )
+                } else {
+                    Message::info(
+                        format!("Current Version: {}", env!("CARGO_PKG_VERSION")),
+                        None,
+                    )
+                }
+            }
+            None => Message::info(
+                format!("Current Version: {}", env!("CARGO_PKG_VERSION")),
+                None,
+            ),
+        };
         AppState {
             input: String::new(),
             cursor_position: 0,
@@ -110,6 +133,7 @@ impl AppState {
 ▗▄▄▞▘  █ ▐▌ ▐▌▐▌ ▐▌▐▌   ▐▌ ▐▌▐▌ ▐▌    ▐▌ ▐▌▝▚▄▞▘▐▙▄▄▖▐▌  ▐▌  █  ",
                     Some(Style::default().fg(ratatui::style::Color::Cyan)),
                 ),
+                version_message,
                 Message::info("/help for help, /status for your current setup", None),
                 Message::info(
                     format!(
@@ -131,7 +155,7 @@ impl AppState {
             dialog_command: None,
             dialog_selected: 0,
             loading: false,
-            loading_type: LoadingType::LLM,
+            loading_type: LoadingType::Llm,
             spinner_frame: 0,
             sessions: Vec::new(),
             show_sessions_dialog: false,
