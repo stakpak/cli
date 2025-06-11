@@ -14,6 +14,7 @@ unicode-width = "0.2.0"
 uuid = { workspace = true }
 tui-markdown = "0.3.5"
 chrono = "0.4"
+pulldown-cmark = "0.9"
 
 [lints.clippy]
 unwrap_used = "deny"

@@ -1,4 +1,6 @@
+use super::message::{extract_full_command_arguments, extract_truncated_command_arguments};
 use crate::app::AppState;
+use crate::services::markdown::render_markdown_to_lines;
 use crate::services::message::{
     BubbleColors, Message, MessageContent, extract_command_purpose, get_command_type_name,
     wrap_text,
@@ -8,8 +10,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use stakpak_shared::models::integrations::openai::ToolCall;
 use uuid::Uuid;
-
-use super::message::{extract_full_command_arguments, extract_truncated_command_arguments};
 
 pub fn extract_bash_block_info(
     tool_call: &ToolCall,
@@ -64,6 +64,63 @@ pub fn extract_bash_block_info(
     (command, outside_title, bubble_title, colors)
 }
 
+fn create_bordered_content_lines(
+    content_lines: &[Line<'static>],
+    bubble_title: &str,
+    inner_width: usize,
+    border_color: Color,
+) -> Vec<Line<'static>> {
+    let mut bordered = Vec::new();
+    let border_style = Style::default().fg(border_color);
+
+    // Top border
+    let title_width = bubble_title.chars().count();
+    let horizontal_line = "─".repeat(inner_width + 2);
+    let top = if title_width <= inner_width {
+        let remaining_dashes = inner_width + 2 - title_width;
+        format!("╭{}{}", bubble_title, "─".repeat(remaining_dashes)) + "╮"
+    } else {
+        let truncated_title = bubble_title.chars().take(inner_width).collect::<String>();
+        format!("╭{}─╮", truncated_title)
+    };
+    bordered.push(Line::from(vec![Span::styled(top, border_style)]));
+
+    // Content lines with borders
+    for line in content_lines {
+        let line_width = line.width();
+        let padding_needed = if inner_width > line_width {
+            inner_width - line_width
+        } else {
+            0
+        };
+        let mut spans = Vec::new();
+        spans.push(Span::styled("│ ", border_style));
+        spans.extend(line.spans.clone()); // <-- preserve all original styles!
+        if padding_needed > 0 {
+            spans.push(Span::raw(" ".repeat(padding_needed)));
+        }
+        spans.push(Span::styled(" │", border_style));
+        bordered.push(Line::from(spans));
+    }
+
+    // Bottom border
+    let bottom = format!("╰{}╯", horizontal_line);
+    bordered.push(Line::from(vec![Span::styled(bottom, border_style)]));
+    bordered
+}
+
+fn is_md_block(content: &str) -> bool {
+    if content.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("path =") && trimmed.ends_with(".md")
+            || trimmed.starts_with("file =") && trimmed.ends_with(".md")
+            || trimmed.starts_with("filename =") && trimmed.ends_with(".md")
+    }) {
+        return true;
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_styled_block(
     content: &str,
@@ -75,13 +132,51 @@ pub fn render_styled_block(
     tool_type: &str,
     message_id: Option<Uuid>,
 ) -> Uuid {
+    let is_md = is_md_block(content);
+
+    if is_md {
+        let terminal_width = terminal_size.width as usize;
+        let content_width = if terminal_width > 4 {
+            terminal_width - 4
+        } else {
+            40
+        };
+        let inner_width = content_width;
+        let processed = render_markdown_to_lines(content, inner_width);
+        let colors = colors.clone().unwrap_or(BubbleColors {
+            border_color: Color::Blue,
+            title_color: Color::White,
+            content_color: Color::Reset,
+            tool_type: "markdown".to_string(),
+        });
+        let bordered_content = create_bordered_content_lines(
+            &processed,
+            bubble_title,
+            inner_width,
+            colors.border_color,
+        );
+        let message_id = message_id.unwrap_or_else(Uuid::new_v4);
+        state.messages.push(Message {
+            id: message_id,
+            content: MessageContent::BashBubble {
+                title: outside_title.to_string(),
+                content: bordered_content,
+                colors,
+                tool_type: "markdown".to_string(),
+            },
+        });
+        return message_id;
+    }
+
     let terminal_width = terminal_size.width as usize;
     let content_width = if terminal_width > 4 {
         terminal_width - 4
     } else {
         40
     };
+
     let content_lines = content.split('\n').collect::<Vec<_>>();
+
     let inner_width = content_width;
     let horizontal_line = "─".repeat(inner_width + 2);
     let bottom_border = format!("╰{}╯", horizontal_line);
@@ -96,6 +191,7 @@ pub fn render_styled_block(
         }
     };
     let mut bubble_lines = vec![];
+
     bubble_lines.push(title_border);
     for line in &content_lines {
         let trimmed_line = line.trim_end();
@@ -127,7 +223,7 @@ pub fn render_styled_block(
         id: message_id,
         content: MessageContent::BashBubble {
             title: outside_title.to_string(),
-            content: bubble_lines,
+            content: bubble_lines.into_iter().map(Line::from).collect(),
             colors: colors.clone().unwrap_or(default_colors),
             tool_type: tool_type.to_string(),
         },
